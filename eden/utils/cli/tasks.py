@@ -6,6 +6,8 @@ import importlib
 import os
 import sys
 from collections.abc import Callable
+from contextlib import ExitStack, closing, contextmanager
+from functools import partial
 from typing import Any, Literal, NamedTuple
 import numpy as np
 
@@ -464,6 +466,12 @@ def inference_task(extra_args: list[str]) -> None:
     )
     _add_shared_policy_cli_args(parser, command="inference")
     parser.add_argument(
+        "--reward-plots",
+        "--reward_plots",
+        action="store_true",
+        help="Open a Viser rollout with live reward plots, editable weights, and link impulses.",
+    )
+    parser.add_argument(
         "--rec",
         action="store_true",
         help="Record an mp4 via a 'rec' camera (saved under the run's log dir).",
@@ -517,6 +525,8 @@ def inference_task(extra_args: list[str]) -> None:
         "Ignored by policies that don't take one; they use their default clip.",
     )
     args = parser.parse_args(extra_args)
+    if args.reward_plots and not args.task:
+        parser.error("--reward-plots requires --task to supply the reward terms.")
     if args.extension_policy:
         if args.checkpoint:
             parser.error("--policy and --checkpoint are mutually exclusive; 'eden deploy' supports both as slots.")
@@ -558,6 +568,10 @@ def inference_task(extra_args: list[str]) -> None:
         if args.rec:
             config.add_recording_camera()
 
+    loop_fn = _run_sim2sim_loop if args.run_async else _run_eval_loop
+    if args.reward_plots:
+        loop_fn = partial(loop_fn, reward_plots=True)
+
     if args.extension_policy:
         _run_inference_policy(
             config,
@@ -570,7 +584,8 @@ def inference_task(extra_args: list[str]) -> None:
             motion_file=args.motion_file,
             clip_name=args.clip_name,
             base_command=tuple(args.base_command),
-            loop_fn=_run_sim2sim_loop if args.run_async else None,
+            loop_fn=loop_fn if args.run_async else None,
+            reward_plots=args.reward_plots,
         )
         return
 
@@ -591,7 +606,7 @@ def inference_task(extra_args: list[str]) -> None:
         record=args.rec,
         max_steps=args.steps,
         max_episodes=args.episodes,
-        loop_fn=_run_sim2sim_loop if args.run_async else None,
+        loop_fn=loop_fn,
     )
 
 
@@ -3553,6 +3568,24 @@ def _draw_motion_ghost(env, motion_manager, entity_name: str, prev_node):
     return env.draw_debug_spheres(poss, radius=_GHOST_SPHERE_RADIUS, color=_GHOST_COLOR)
 
 
+@contextmanager
+def _inference_step(env, reward_plots, *, pace=True):
+    if not reward_plots:
+        yield env.step
+        return
+
+    try:
+        from eden.extensions.visualization.reward_viewer import RewardViewer
+    except ModuleNotFoundError as exc:
+        if exc.name != "viser":
+            raise
+        raise ImportError(f"--reward-plots requires Viser. Install it with {install_hint('vis')}.") from exc
+
+    with closing(RewardViewer(env)) as viewer:
+        viewer.update()
+        yield partial(viewer.step, pace=pace)
+
+
 def _run_inference_policy(
     config,
     policy_name: str,
@@ -3565,6 +3598,7 @@ def _run_inference_policy(
     motion_file: str | None,
     clip_name: str | None = None,
     base_command: tuple[float, float, float],
+    reward_plots: bool = False,
     loop_fn=None,
 ) -> None:
     """Roll out a frozen extension policy in sim — no checkpoint, no hardware.
@@ -3647,9 +3681,9 @@ def _run_inference_policy(
 
     obs, _ = env.reset()
     policy.reset()
-    with torch.no_grad():
+    with torch.no_grad(), _inference_step(env, reward_plots) as step:
         for _ in tqdm(range(max_steps), desc="inference"):
-            obs, _, terminated, timeouts, _ = env.step(policy.step(obs))
+            obs, _, terminated, timeouts, _ = step(policy.step(obs))
             # Task envs terminate/auto-reset mid-run; rewind the policy's
             # per-env state (last-action buffers, gait phase, ...) to match.
             dones = terminated | timeouts
@@ -4188,6 +4222,7 @@ def _run_eval_loop(
     env,
     policy_fn,
     *,
+    reward_plots: bool = False,
     record: bool = False,
     max_steps: int | None = None,
     max_episodes: int | None = None,
@@ -4206,9 +4241,9 @@ def _run_eval_loop(
     # rsl_rl env.reset() returns (obs, extras); rl_games returns just obs.
     reset_out = env.reset()
     obs = reset_out[0] if isinstance(reset_out, tuple) else reset_out
-    with torch.no_grad():
+    with torch.no_grad(), _inference_step(env, reward_plots) as step:
         for _ in tqdm(range(step_budget), desc="inference"):
-            obs = env.step(policy_fn(obs))[0]
+            obs = step(policy_fn(obs))[0]
             metrics.update(env.unwrapped.reset_buf, env.unwrapped.metric_manager)
             if metrics.done:
                 break
@@ -4239,6 +4274,7 @@ def _run_sim2sim_loop(
     env,
     policy_fn,
     *,
+    reward_plots: bool = False,
     record: bool = False,
     max_steps: int | None = None,
     max_episodes: int | None = None,
@@ -4322,7 +4358,9 @@ def _run_sim2sim_loop(
     n_stale = 0
     last_version = 0
     busy_time = 0.0
+    view = ExitStack()
     try:
+        step = view.enter_context(_inference_step(env, reward_plots, pace=False))
         # Wait for the first action before engaging the control loop — a
         # deployment doesn't start stepping before the policy produced a
         # target either.
@@ -4343,7 +4381,7 @@ def _run_sim2sim_loop(
                 n_stale += 1
             last_version = version
 
-            obs = env.step(action)[0]
+            obs = step(action)[0]
             with lock:
                 shared["obs"] = _clone_obs(obs)
                 obs_ready.set()
@@ -4365,6 +4403,7 @@ def _run_sim2sim_loop(
     finally:
         stop.set()
         worker.join(timeout=1.0)
+        view.close()
         if rec is not None:
             rec.stop_recording()
 

@@ -184,6 +184,11 @@ class RewardManager(FlatManagerBase[RewardManagerOptions]):
         buf = self._episode_raw_sums if raw else self._episode_sums
         return buf[:, self._term_col(name)]
 
+    @property
+    def step_reward_rates(self) -> torch.Tensor:
+        """Read-only last-step rates (envs by active terms), masked and weighted, before multiplication by dt."""
+        return self._step_reward
+
     def get_term_value(self, name: str) -> torch.Tensor:
         """Return term ``name``'s output at the last computed step as a ``(num_envs,)`` view.
 
