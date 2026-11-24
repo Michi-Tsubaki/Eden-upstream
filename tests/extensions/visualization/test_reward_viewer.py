@@ -10,7 +10,7 @@ pytest.importorskip("viser", minversion="1.1.0")
 from eden.extensions.visualization.reward_viewer import RewardViewer
 from eden.options import BoxOptions, EnvOptions, RewardManagerOptions, RewardTermOptions, SceneOptions
 from eden.options.managers.terminations import TerminationManagerOptions, TerminationTermOptions
-from eden.utils.configs import EdenRLConfig
+from eden.utils.configs import EdenConfig, EdenRLConfig
 from tests.support.envs import build_env
 
 
@@ -33,8 +33,9 @@ def test_plots_weights_impulses_and_episode_boundaries():
             viewer.env_index.value = 1
             box = env.entities["box"]
             viewer._impulses.put((1, box.links[0].idx, (0.1, 0, 0)))
-            viewer._weights[0][1].value = -2.0
+            viewer._weights[0][1].value = "-2"
             _, reward, *_ = viewer.step(None)
+            assert reward[1].item() == pytest.approx(-2 * box.get_pos()[1, 2].item() ** 2 * env.dt, rel=1e-5)
             assert box.get_vel()[0, 0].item() == pytest.approx(0)
             mass = box.get_links_inertial_mass()[1, 0].item()
             assert box.get_vel()[1, 0].item() == pytest.approx(0.1 / mass, rel=1e-4)
@@ -49,5 +50,19 @@ def test_plots_weights_impulses_and_episode_boundaries():
             np.testing.assert_allclose(plot.data[0], [3 * env.dt])
             viewer.step(None)
             np.testing.assert_allclose(plot.data[0], [env.dt])
+            viewer._weights[0][1].value = "heavy"
+            assert env.reward_manager.get_term("height").weight == -2.0
+            assert viewer._weights[0][1].value == "-2.0"
+    finally:
+        env.destroy()
+
+
+def test_an_env_without_rewards_is_refused():
+    env = build_env(
+        EdenConfig(env_options=EnvOptions(num_envs=1), scene_options=SceneOptions(box=BoxOptions(size=(0.1, 0.1, 0.1))))
+    )
+    try:
+        with pytest.raises(TypeError, match=r"need an RL env with a reward manager, but got EnvBase"):
+            RewardViewer(env, port=0)
     finally:
         env.destroy()
