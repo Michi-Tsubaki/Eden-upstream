@@ -202,11 +202,9 @@ class ViserViewer:
         # Check if entity is heterogeneous (grouped entity with multiple morphs)
         if entity.is_heterogeneous:
             self._add_heterogeneous_entity(name, entity, use_visual_mesh)
-        elif isinstance(entity.morph, (URDF, MJCF, USD)):
-            self._add_articulated_entity(name, entity, use_visual_mesh)
         elif isinstance(entity.morph, Plane):
             self._add_mesh_entity(name, entity, use_visual_mesh, is_batched=False)
-        elif isinstance(entity.morph, (Mesh, Primitive)):
+        elif isinstance(entity.morph, (URDF, MJCF, USD, Mesh, Primitive)):
             self._add_mesh_entity(name, entity, use_visual_mesh)
         else:
             raise ValueError(f"Entity type not supported: {type(entity.morph)}")
@@ -325,40 +323,6 @@ class ViserViewer:
             num_envs=self.env.num_envs if is_batched else 1,
             active_envs_idx=None if is_batched else [0],
         )
-
-    def _add_articulated_entity(
-        self,
-        name: str,
-        entity: Entity,
-        use_visual_mesh: bool = True,
-        allow_collision_as_visual: bool = False,
-    ):
-        qs_idx_local = slice(None)
-
-        tmp_qpos = entity.get_qpos(qs_idx_local=qs_idx_local).clone().detach()
-
-        canonical_qpos = torch.zeros_like(tmp_qpos)
-        # Index 3 is the free root's quaternion w — but only when a free root prefix exists.
-        # A welded child has none (``attach`` removed its root joint), so index 3 is an ordinary
-        # joint there and writing 1.0 into it would pose the robot instead of identity-ing it.
-        if not entity.has_immobile_base:
-            if canonical_qpos.ndim == 1:  # single instance
-                canonical_qpos[3] = 1.0
-            else:
-                canonical_qpos[:, 3] = 1.0  # w component of quaternion
-
-        entity.set_qpos(canonical_qpos, qs_idx_local=qs_idx_local)
-
-        self._add_entity_common(
-            name=name,
-            entity=entity,
-            use_visual_mesh=use_visual_mesh,
-            allow_collision_as_visual=allow_collision_as_visual,
-            num_envs=self.env.num_envs,
-            active_envs_idx=None,
-        )
-
-        entity.set_qpos(tmp_qpos, qs_idx_local=qs_idx_local)
 
     def add_point_cloud(self, name: str, points: np.ndarray, colors: np.ndarray):
         self.server.scene.add_point_cloud(
