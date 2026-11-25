@@ -435,6 +435,45 @@ def train_task(extra_args: list[str]) -> None:
         _run_train_rsl_rl(config, checkpoint=checkpoint)
 
 
+class _LiveRewards(NamedTuple):
+    """Where ``eden inference --live_rewards`` serves its Viser viewer."""
+
+    port: int
+    host: str = "localhost"
+
+
+def _tcp_port(value: str) -> int:
+    """Parse a TCP port for argparse: an integer from 0 (the OS picks a free one) to 65535."""
+    port = int(value) if value.isdigit() else -1
+    if not 0 <= port <= 65535:
+        import argparse
+
+        raise argparse.ArgumentTypeError(f"{value!r} is not a TCP port; give an integer from 0 to 65535.")
+    return port
+
+
+def _no_active_reward_terms(config) -> str | None:
+    """Why ``config`` builds no reward term the viewer could plot, or None when it builds at least one.
+
+    Mirrors ``RewardManager._prepare_terms``, which builds every term (flat or inside a group) of nonzero weight.
+    """
+    from eden.options.managers.rewards import RewardGroupOptions
+
+    options = getattr(config, "reward_options", None)
+    if options is None:
+        return f"{type(config).__name__} has no reward_options"
+    weights = []
+    for key in options.term_keys():
+        entry = getattr(options, key)
+        group = entry.term_keys() if isinstance(entry, RewardGroupOptions) else None
+        weights += [getattr(entry, name).weight for name in group] if group is not None else [entry.weight]
+    if not weights:
+        return "reward_options declares no term"
+    if not any(weights):
+        return "every reward term has weight 0.0, and a weight-0 term is not built"
+    return None
+
+
 def inference_task(extra_args: list[str]) -> None:
     """``eden inference --task <name> --checkpoint <path> [task-mod flags]``.
 
@@ -466,13 +505,21 @@ def inference_task(extra_args: list[str]) -> None:
     )
     _add_shared_policy_cli_args(parser, command="inference")
     parser.add_argument(
-        "--live-rewards",
         "--live_rewards",
+        "--live-rewards",
         nargs="?",
         const=8080,
-        type=int,
+        type=_tcp_port,
         metavar="PORT",
-        help="Open a Viser rollout with live reward plots, editable weights, and link impulses (default port 8080).",
+        help="Open a Viser rollout with live reward plots, editable weights, and link impulses on PORT "
+        "(default 8080; 0 lets the OS pick a free one).",
+    )
+    parser.add_argument(
+        "--live_rewards_host",
+        default=None,
+        metavar="HOST",
+        help="Interface the --live_rewards viewer binds (default localhost). 0.0.0.0 serves every interface, "
+        "which lets anyone who can reach the port change weights and push links.",
     )
     parser.add_argument(
         "--rec",
@@ -529,7 +576,9 @@ def inference_task(extra_args: list[str]) -> None:
     )
     args = parser.parse_args(extra_args)
     if args.live_rewards is not None and not args.task:
-        parser.error("--live-rewards requires --task to supply the reward terms.")
+        parser.error("--live_rewards requires --task to supply the reward terms.")
+    if args.live_rewards_host is not None and args.live_rewards is None:
+        parser.error("--live_rewards_host only applies to the --live_rewards viewer; add --live_rewards [PORT].")
     if args.extension_policy:
         if args.checkpoint:
             parser.error("--policy and --checkpoint are mutually exclusive; 'eden deploy' supports both as slots.")
@@ -571,9 +620,20 @@ def inference_task(extra_args: list[str]) -> None:
         if args.rec:
             config.add_recording_camera()
 
-    loop_fn = _run_sim2sim_loop if args.run_async else _run_eval_loop
+    live_rewards = None
     if args.live_rewards is not None:
-        loop_fn = partial(loop_fn, reward_plots=args.live_rewards)
+        # Refused here, before the env and the policy are built, rather than when the viewer opens.
+        reason = _no_active_reward_terms(config)
+        if reason is not None:
+            parser.error(
+                f"--live_rewards plots reward terms, but task '{args.task}' has no active one: {reason}. "
+                "Pick a task with a nonzero-weight reward term, or drop --live_rewards."
+            )
+        live_rewards = _LiveRewards(port=args.live_rewards, host=args.live_rewards_host or "localhost")
+
+    loop_fn = _run_sim2sim_loop if args.run_async else _run_eval_loop
+    if live_rewards is not None:
+        loop_fn = partial(loop_fn, reward_plots=live_rewards)
 
     if args.extension_policy:
         _run_inference_policy(
@@ -588,7 +648,7 @@ def inference_task(extra_args: list[str]) -> None:
             clip_name=args.clip_name,
             base_command=tuple(args.base_command),
             loop_fn=loop_fn if args.run_async else None,
-            reward_plots=args.live_rewards,
+            reward_plots=live_rewards,
         )
         return
 
@@ -3582,9 +3642,9 @@ def _inference_step(env, reward_plots, *, pace=True):
     except ModuleNotFoundError as exc:
         if exc.name != "viser":
             raise
-        raise ImportError(f"--live-rewards requires Viser. Install it with {install_hint('vis')}.") from exc
+        raise ImportError(f"--live_rewards requires Viser. Install it with {install_hint('vis')}.") from exc
 
-    with closing(RewardViewer(env, port=reward_plots)) as viewer:
+    with closing(RewardViewer(env, host=reward_plots.host, port=reward_plots.port)) as viewer:
         viewer.update()
         yield partial(viewer.step, pace=pace), lambda: viewer.viewer_time
 
@@ -3601,7 +3661,7 @@ def _run_inference_policy(
     motion_file: str | None,
     clip_name: str | None = None,
     base_command: tuple[float, float, float],
-    reward_plots: int | None = None,
+    reward_plots: _LiveRewards | None = None,
     loop_fn=None,
 ) -> None:
     """Roll out a frozen extension policy in sim — no checkpoint, no hardware.
@@ -4225,7 +4285,7 @@ def _run_eval_loop(
     env,
     policy_fn,
     *,
-    reward_plots: int | None = None,
+    reward_plots: _LiveRewards | None = None,
     record: bool = False,
     max_steps: int | None = None,
     max_episodes: int | None = None,
@@ -4277,7 +4337,7 @@ def _run_sim2sim_loop(
     env,
     policy_fn,
     *,
-    reward_plots: int | None = None,
+    reward_plots: _LiveRewards | None = None,
     record: bool = False,
     max_steps: int | None = None,
     max_episodes: int | None = None,

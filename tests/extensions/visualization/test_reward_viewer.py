@@ -35,12 +35,16 @@ def test_plots_weights_impulses_and_episode_boundaries():
             viewer._impulses.put((1, box.links[0].idx, (0.1, 0, 0)))
             term = env.reward_manager.get_term("height")
             _, weight, set_weight = viewer._weights[0]
-            # Viser sends every keystroke: the partial entries neither change the weight nor get overwritten.
+            assert set_weight.disabled
+            # Viser sends every keystroke: the partial entries neither change the weight nor get overwritten, and
+            # the enabled button marks the edit as not yet applied.
             for typed in ("", "-", "-0", "-2"):
                 weight.value = typed
                 assert term.weight == -1.0
+                assert not set_weight.disabled
             assert weight.value == "-2"
             set_weight.value = True
+            assert (weight.value, set_weight.disabled) == ("-2.0", True)
             _, reward, *_ = viewer.step(None)
             assert reward[1].item() == pytest.approx(-2 * box.get_pos()[1, 2].item() ** 2 * env.dt, rel=1e-5)
             assert box.get_vel()[0, 0].item() == pytest.approx(0)
@@ -60,7 +64,7 @@ def test_plots_weights_impulses_and_episode_boundaries():
             weight.value = "heavy"
             set_weight.value = True
             assert term.weight == -2.0
-            assert weight.value == "-2.0"
+            assert (weight.value, set_weight.disabled) == ("-2.0", True)
     finally:
         env.destroy()
 
@@ -71,6 +75,24 @@ def test_an_env_without_rewards_is_refused():
     )
     try:
         with pytest.raises(TypeError, match=r"need an RL env with a reward manager, but got EnvBase"):
+            RewardViewer(env, port=0)
+    finally:
+        env.destroy()
+
+
+def test_an_env_whose_reward_terms_all_have_weight_zero_is_refused():
+    config = EdenRLConfig(
+        env_options=EnvOptions(num_envs=1),
+        scene_options=SceneOptions(box=BoxOptions(size=(0.1, 0.1, 0.1))),
+        reward_options=RewardManagerOptions(
+            height=RewardTermOptions(name="base_height_l2", weight=0.0, params={"entity_name": "box"})
+        ),
+    )
+    env = build_env(config)
+    try:
+        with pytest.raises(
+            ValueError, match=r"but EdenRLConfig builds none: a reward term of weight 0\.0 is not built"
+        ):
             RewardViewer(env, port=0)
     finally:
         env.destroy()

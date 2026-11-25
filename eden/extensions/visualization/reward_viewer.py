@@ -24,7 +24,11 @@ class RewardViewer(ViserViewer):
                 "Pass a --task whose config subclasses EdenRLConfig."
             )
         if not env.unwrapped.reward_manager.active_terms:
-            raise ValueError("Reward plots require a task with at least one active reward term with nonzero weight.")
+            raise ValueError(
+                f"Reward plots need a reward term to plot, but {type(env.unwrapped.config).__name__} builds none: "
+                "a reward term of weight 0.0 is not built. Give a term in reward_options a nonzero weight, or roll "
+                "out without the reward viewer."
+            )
         super().__init__(env.unwrapped, host=host, port=port)
         self._step_env = env.step
         # Wall-clock seconds spent waiting for Play and drawing the plots and the scene. A rollout's timing report
@@ -65,10 +69,13 @@ class RewardViewer(ViserViewer):
             for name, term in manager.iter_terms():
                 with gui.add_folder(name) as folder:
                     # Viser sends a text field's value on every keystroke, so the weight changes only on the button:
-                    # a half-typed "-" or "-0" must neither be rejected under the cursor nor rescore any step.
+                    # a half-typed "-" or "-0" must neither be rejected under the cursor nor rescore any step. The
+                    # button is enabled only while the field differs from the weight in force, so an edit that was
+                    # never applied stays visible.
                     weight = gui.add_text("Weight", str(term.weight), hint="Type a number, then click Set weight.")
-                    set_weight = gui.add_button("Set weight")
-                    set_weight.on_click(partial(self._set_weight, name, term, weight))
+                    set_weight = gui.add_button("Set weight", disabled=True)
+                    weight.on_update(partial(self._mark_weight_edit, term, set_weight))
+                    set_weight.on_click(partial(self._set_weight, name, term, weight, set_weight))
                     self._weights.append((term, weight, set_weight))
                     plot = gui.add_uplot(
                         data=(np.empty(0), np.empty(0)),
@@ -79,7 +86,11 @@ class RewardViewer(ViserViewer):
                 self._plots[name] = folder, plot
         self._setup_visualization_gui()
 
-    def _set_weight(self, name, term, field, _event):
+    @staticmethod
+    def _mark_weight_edit(term, button, event):
+        button.disabled = event.target.value == str(term.weight)
+
+    def _set_weight(self, name, term, field, button, _event):
         try:
             weight = float(field.value)
         except ValueError:
@@ -88,9 +99,11 @@ class RewardViewer(ViserViewer):
             en.logger.warning(
                 f"Reward weight {field.value!r} for term '{name}' is not a finite number; keeping {term.weight}."
             )
-            field.value = str(term.weight)
-            return
-        term.weight = weight
+        else:
+            term.weight = weight
+        # Show the weight in force in its canonical spelling, which also disables the button until the next edit.
+        field.value = str(term.weight)
+        button.disabled = True
 
     def step(self, action, *, pace=True):
         if not self._built:
