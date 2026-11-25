@@ -35,14 +35,10 @@ class LinkHandle:
         self,
         handle: viser.SceneNodeHandle,
         link: RigidLink,
-        canonical_pos: torch.Tensor,
-        canonical_quat: torch.Tensor,
         active_envs_idx: torch.Tensor | list | None = None,
     ):
         self.handle = handle
         self.link = link
-        self.canonical_pos = canonical_pos
-        self.canonical_quat = canonical_quat
         self.active_envs_idx = active_envs_idx
 
     def update(self, env_offset: np.ndarray | None = None):
@@ -202,6 +198,7 @@ class ViserViewer:
         # Check if entity is heterogeneous (grouped entity with multiple morphs)
         if entity.is_heterogeneous:
             self._add_heterogeneous_entity(name, entity, use_visual_mesh)
+        # Plane subclasses Primitive, so it must be tested before the branch below, which would batch it per env.
         elif isinstance(entity.morph, Plane):
             self._add_mesh_entity(name, entity, use_visual_mesh, is_batched=False)
         elif isinstance(entity.morph, (URDF, MJCF, USD, Mesh, Primitive)):
@@ -245,7 +242,7 @@ class ViserViewer:
             )
             num_instances = len(active_envs_idx) if active_envs_idx is not None else self.env.num_envs
 
-            mesh = geom.get_trimesh().copy()
+            mesh = geom.trimesh.copy()
             geom_pos = torch.from_numpy(geom.init_pos).float()
             geom_quat = torch.from_numpy(geom.init_quat).float()
             T = trans_quat_to_T(geom_pos.unsqueeze(0), geom_quat.unsqueeze(0))
@@ -253,19 +250,13 @@ class ViserViewer:
 
             viser_handle = self._create_batched_mesh_handle(handle_name, mesh, num_instances)
 
-            link_handle = LinkHandle(
-                handle=viser_handle,
-                link=link,
-                canonical_pos=geom.get_pos(relative=False).clone().detach(),
-                canonical_quat=geom.get_quat(relative=False).clone().detach(),
-                active_envs_idx=active_envs_idx,
-            )
+            link_handle = LinkHandle(handle=viser_handle, link=link, active_envs_idx=active_envs_idx)
             self._store_handle(handle_name, link_handle, use_visual_mesh)
 
     def _build_combined_mesh(self, geoms):
         meshes = []
         for geom in geoms:
-            mesh = geom.get_trimesh().copy()
+            mesh = geom.trimesh.copy()
             geom_pos = torch.from_numpy(geom.init_pos).float()
             geom_quat = torch.from_numpy(geom.init_quat).float()
             T = trans_quat_to_T(geom_pos.unsqueeze(0), geom_quat.unsqueeze(0))
@@ -297,13 +288,7 @@ class ViserViewer:
 
             viser_handle = self._create_batched_mesh_handle(handle_name, combined, num_envs)
 
-            link_handle = LinkHandle(
-                handle=viser_handle,
-                link=link,
-                canonical_pos=link.get_pos(relative=False).clone().detach(),
-                canonical_quat=link.get_quat(relative=False).clone().detach(),
-                active_envs_idx=active_envs_idx,
-            )
+            link_handle = LinkHandle(handle=viser_handle, link=link, active_envs_idx=active_envs_idx)
 
             self._store_handle(handle_name, link_handle, use_visual_mesh)
 
