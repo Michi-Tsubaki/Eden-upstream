@@ -3586,7 +3586,7 @@ def _inference_step(env, reward_plots, *, pace=True):
 
     with closing(RewardViewer(env, port=reward_plots)) as viewer:
         viewer.update()
-        yield partial(viewer.step, pace=pace), lambda: viewer.paused_time
+        yield partial(viewer.step, pace=pace), lambda: viewer.viewer_time
 
 
 def _run_inference_policy(
@@ -4363,7 +4363,7 @@ def _run_sim2sim_loop(
     busy_time = 0.0
     view = ExitStack()
     try:
-        step, paused_time = view.enter_context(_inference_step(env, reward_plots, pace=False))
+        step, viewer_time = view.enter_context(_inference_step(env, reward_plots, pace=False))
         # Wait for the first action before engaging the control loop — a
         # deployment doesn't start stepping before the policy produced a
         # target either.
@@ -4375,7 +4375,7 @@ def _run_sim2sim_loop(
         wall_start = time.perf_counter()
         for _ in tqdm(range(step_budget), desc="sim2sim"):
             t0 = time.perf_counter()
-            paused_start = paused_time()
+            viewer_start = viewer_time()
             if shared["exc"] is not None:
                 raise shared["exc"]
             with lock:
@@ -4397,13 +4397,13 @@ def _run_sim2sim_loop(
             if rec is not None:
                 rec.render_rgb()
 
-            elapsed = time.perf_counter() - t0 - (paused_time() - paused_start)
+            elapsed = time.perf_counter() - t0 - (viewer_time() - viewer_start)
             busy_time += elapsed
             if elapsed > control_dt:
                 n_overruns += 1
             else:
                 time.sleep(control_dt - elapsed)
-        wall_time = time.perf_counter() - wall_start - paused_time()
+        wall_time = time.perf_counter() - wall_start - viewer_time()
     finally:
         stop.set()
         worker.join(timeout=1.0)

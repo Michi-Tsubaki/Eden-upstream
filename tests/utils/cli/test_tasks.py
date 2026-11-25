@@ -2440,10 +2440,22 @@ def test_the_eval_loop_steps_through_the_reward_viewer_on_the_given_port(reward_
     assert len(viewer._history) == 2
 
 
-def test_a_paused_reward_viewer_counts_as_neither_compute_nor_wall_time(reward_env, reward_viewers, eden_caplog):
+def test_pausing_and_drawing_the_reward_viewer_count_as_neither_compute_nor_wall_time(
+    reward_env, reward_viewers, eden_caplog, monkeypatch
+):
+    from eden.extensions.visualization.reward_viewer import RewardViewer
+
+    # Each draw takes three control periods (dt = 0.02 s); counted as compute, every step would overrun.
+    update = RewardViewer.update
+
+    def slow_update(self):
+        time.sleep(0.06)
+        return update(self)
+
+    monkeypatch.setattr(RewardViewer, "update", slow_update)
     reward_viewers.play_after = 0.5
     _run_sim2sim_loop(reward_env, lambda obs: None, max_steps=3, reward_plots=0)
-    assert reward_viewers.viewers[0].paused_time >= 0.4
+    assert reward_viewers.viewers[0].viewer_time >= 0.4 + 3 * 0.06
     assert "waiting for Play" in eden_caplog.text
     assert "0 overrun(s)" in eden_caplog.text
     real_time_factor = float(re.search(r"real-time factor ([\d.]+)x", eden_caplog.text)[1])

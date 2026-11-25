@@ -27,7 +27,9 @@ class RewardViewer(ViserViewer):
             raise ValueError("Reward plots require a task with at least one active reward term with nonzero weight.")
         super().__init__(env.unwrapped, host=host, port=port)
         self._step_env = env.step
-        self.paused_time = 0.0
+        # Wall-clock seconds spent waiting for Play and drawing the plots and the scene. A rollout's timing report
+        # subtracts this, so it measures the policy and the sim rather than the viewer.
+        self.viewer_time = 0.0
 
     def _setup_gui(self):
         manager = self.env.reward_manager
@@ -62,9 +64,12 @@ class RewardViewer(ViserViewer):
         with gui.add_folder("Weighted rewards per second"):
             for name, term in manager.iter_terms():
                 with gui.add_folder(name) as folder:
-                    weight = gui.add_text("Weight", str(term.weight))
-                    weight.on_update(partial(self._set_weight, term))
-                    self._weights.append((term, weight))
+                    # Viser sends a text field's value on every keystroke, so the weight changes only on the button:
+                    # a half-typed "-" or "-0" must neither be rejected under the cursor nor rescore any step.
+                    weight = gui.add_text("Weight", str(term.weight), hint="Type a number, then click Set weight.")
+                    set_weight = gui.add_button("Set weight")
+                    set_weight.on_click(partial(self._set_weight, name, term, weight))
+                    self._weights.append((term, weight, set_weight))
                     plot = gui.add_uplot(
                         data=(np.empty(0), np.empty(0)),
                         series=(uplot.Series(label="Time (s)"), uplot.Series(label="Rate", stroke="#3b82f6")),
@@ -74,14 +79,16 @@ class RewardViewer(ViserViewer):
                 self._plots[name] = folder, plot
         self._setup_visualization_gui()
 
-    def _set_weight(self, term, event):
+    def _set_weight(self, name, term, field, _event):
         try:
-            weight = float(event.target.value)
+            weight = float(field.value)
         except ValueError:
             weight = math.nan
         if not math.isfinite(weight):
-            en.logger.warning(f"Reward weight {event.target.value!r} is not a finite number; keeping {term.weight}.")
-            event.target.value = str(term.weight)
+            en.logger.warning(
+                f"Reward weight {field.value!r} for term '{name}' is not a finite number; keeping {term.weight}."
+            )
+            field.value = str(term.weight)
             return
         term.weight = weight
 
@@ -106,7 +113,7 @@ class RewardViewer(ViserViewer):
             time.sleep(0.02)
 
         start = time.monotonic()
-        self.paused_time += start - wait_start
+        self.viewer_time += start - wait_start
         episode_step = self.env.episode_length_buf[index] + 1
         while not self._impulses.empty():
             env_index, link_index, impulse = self._impulses.get_nowait()
@@ -121,7 +128,10 @@ class RewardViewer(ViserViewer):
 
         result = self._step_env(action)
         rates = self.env.reward_manager.step_reward_rates[index]
+        # This read waits for the step's device work, so the clock below starts once the sim has finished and
+        # times only the drawing. The per-link scene refresh in update() makes a device round trip per link.
         episode_step, *rates = torch.cat((episode_step.view(1).to(rates.dtype), rates)).tolist()
+        draw_start = time.monotonic()
         if episode_step == 1:
             self._history.clear()
         self._history.append((episode_step * self.env.dt, *rates))
@@ -131,6 +141,7 @@ class RewardViewer(ViserViewer):
             for (name, (folder, plot)), series in zip(self._plots.items(), values, strict=True):
                 folder.label = f"{name}  {series[-1]:.4g}"
                 plot.data = (times, series)
+        self.viewer_time += time.monotonic() - draw_start
         if pace:
             time.sleep(max(0.0, self.env.dt - (time.monotonic() - start)))
         return result

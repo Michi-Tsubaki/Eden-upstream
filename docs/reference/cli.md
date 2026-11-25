@@ -156,12 +156,14 @@ cannot be combined. See [Training runs](../guides/training-runs.md) and the [pol
 | `--clip_name CLIP` | The clip to track, for policies with per-clip checkpoints (e.g. `beyondmimic_moves`). |
 
 With `--live-rewards`, open the local URL printed by Viser and select **Play**; until then the rollout waits and
-logs that URL. Paused time is left out of the `--async` timing report. Each curve shows the selected
+logs that URL. The `--async` timing report leaves out the time spent paused and drawing the viewer, so its step
+compute, overruns and real-time factor describe the policy and the sim. Each curve shows the selected
 environment's weighted reward rate against simulation time. Multiplying the sum of the curves by the control
 timestep gives the scalar step reward. The plots keep the last 200 steps and start a new trace when the episode
-or selected environment changes. Each term shows its current value. Edit its **Weight** to rescore subsequent
-steps for all environments in this run. Under **Disturbance**, choose a movable link, enter a world-frame impulse
-in N·s, and click **Apply impulse** to push its center of mass on the next step in the selected environment.
+or selected environment changes. Each term shows its current value. Type a new **Weight** and click
+**Set weight** to rescore subsequent steps for all environments in this run. Under **Disturbance**, choose a
+movable link, enter a world-frame impulse in N·s, and click **Apply impulse** to push its center of mass on the
+next step in the selected environment.
 
 ### `eden export`
 

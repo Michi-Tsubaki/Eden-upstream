@@ -33,13 +33,20 @@ def test_plots_weights_impulses_and_episode_boundaries():
             viewer.env_index.value = 1
             box = env.entities["box"]
             viewer._impulses.put((1, box.links[0].idx, (0.1, 0, 0)))
-            viewer._weights[0][1].value = "-2"
+            term = env.reward_manager.get_term("height")
+            _, weight, set_weight = viewer._weights[0]
+            # Viser sends every keystroke: the partial entries neither change the weight nor get overwritten.
+            for typed in ("", "-", "-0", "-2"):
+                weight.value = typed
+                assert term.weight == -1.0
+            assert weight.value == "-2"
+            set_weight.value = True
             _, reward, *_ = viewer.step(None)
             assert reward[1].item() == pytest.approx(-2 * box.get_pos()[1, 2].item() ** 2 * env.dt, rel=1e-5)
             assert box.get_vel()[0, 0].item() == pytest.approx(0)
             mass = box.get_links_inertial_mass()[1, 0].item()
             assert box.get_vel()[1, 0].item() == pytest.approx(0.1 / mass, rel=1e-4)
-            assert env.reward_manager.get_term("height").weight == -2.0
+            assert term.weight == -2.0
             folder, plot = viewer._plots["height"]
             assert folder.label == f"height  {plot.data[1][-1]:.4g}"
             np.testing.assert_allclose(plot.data[1], [reward[1].item() / env.dt])
@@ -50,9 +57,10 @@ def test_plots_weights_impulses_and_episode_boundaries():
             np.testing.assert_allclose(plot.data[0], [3 * env.dt])
             viewer.step(None)
             np.testing.assert_allclose(plot.data[0], [env.dt])
-            viewer._weights[0][1].value = "heavy"
-            assert env.reward_manager.get_term("height").weight == -2.0
-            assert viewer._weights[0][1].value == "-2.0"
+            weight.value = "heavy"
+            set_weight.value = True
+            assert term.weight == -2.0
+            assert weight.value == "-2.0"
     finally:
         env.destroy()
 
